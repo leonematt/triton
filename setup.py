@@ -492,10 +492,41 @@ class CMakeBuild(build_ext):
                 "-DCMAKE_SHARED_LINKER_FLAGS=-fuse-ld=lld",
             ]
 
-        if check_env_flag("LLVM_BUILD_SHARED_LIBS"):
-            cmake_args += ["-DLLVM_BUILD_SHARED_LIBS=1"]
-        else:
-            cmake_args += ["-DLLVM_BUILD_SHARED_LIBS=0"]
+        if check_env_flag("TRITON_PULL_LLVM_SHARED_LIBS"):
+            # Ensure we have the base directory (~/.triton)
+            triton_cache = get_triton_cache_path()
+            # Define exactly where the SDK lives
+            sdk_root = os.path.join(triton_cache, "llvm-dist")
+            dist_url = "https://d13fvoom80smiv.cloudfront.net/llvm-dist.tar.gz"
+
+            if not os.path.exists(sdk_root):
+                os.makedirs(triton_cache, exist_ok=True)
+
+                with open_url(dist_url) as response:
+                    with tarfile.open(fileobj=response, mode="r|*") as tar:
+                        # Extract into ~/.triton (the tar contains 'llvm-dist/' folder)
+                        tar.extractall(path=triton_cache)
+
+            abs_sdk = os.path.abspath(sdk_root)
+
+            cmake_args += [
+                f"-DLLVM_SYSPATH={abs_sdk}",
+                f"-DCMAKE_PREFIX_PATH={abs_sdk}",
+                f"-DLLVM_DIR={abs_sdk}/lib/cmake/llvm",
+                f"-DMLIR_DIR={abs_sdk}/lib/cmake/mlir",
+                f"-DLLD_DIR={abs_sdk}/lib/cmake/lld",
+                f"-DMLIR_TABLEGEN_EXE={abs_sdk}/bin/mlir-tblgen",
+                f"-DLLVM_TABLEGEN_EXE={abs_sdk}/bin/llvm-tblgen",
+                "-DLLVM_BUILD_SHARED_LIBS=ON",
+                "-DTRITON_PULL_LLVM_SHARED_LIBS=OFF" # Kill Triton's internal downloader
+            ]
+
+            cmake_args += [f"-DCMAKE_INSTALL_RPATH={abs_sdk}/lib"]
+
+            os.environ["LLVM_SYSPATH"] = abs_sdk
+            # Update LD_LIBRARY_PATH so the build-time tests/tools can find the .so files
+            os.environ["LD_LIBRARY_PATH"] = os.path.join(abs_sdk, "lib") + \
+                (f":{os.environ.get('LD_LIBRARY_PATH', '')}" if os.environ.get('LD_LIBRARY_PATH') else "")
 
         # Note that asan doesn't work with binaries that use the GPU, so this is
         # only useful for tools like triton-opt that don't run code on the GPU.

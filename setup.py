@@ -493,40 +493,32 @@ class CMakeBuild(build_ext):
             ]
 
         if check_env_flag("TRITON_PULL_LLVM_SHARED_LIBS"):
-            # Ensure we have the base directory (~/.triton)
-            triton_cache = get_triton_cache_path()
-            # Define exactly where the SDK lives
-            sdk_root = os.path.join(triton_cache, "llvm-dist")
-            dist_url = "https://d13fvoom80smiv.cloudfront.net/llvm-dist.tar.gz"
+            # Download shared LLVM libs
+            llvm_build_dir = os.environ.get("LLVM_BUILD_DIR")
 
-            if not os.path.exists(sdk_root):
-                os.makedirs(triton_cache, exist_ok=True)
+            if not (llvm_build_dir and os.path.exists(os.path.join(llvm_build_dir, "lib", "libLLVM.so"))):
+                triton_cache = get_triton_cache_path()
+                llvm_build_dir = os.path.join(triton_cache, "llvm-dist")
+                dist_url = os.environ.get("LLVM_DIST_URL", "https://d13fvoom80smiv.cloudfront.net/llvm-dist.tar.gz")
 
-                with open_url(dist_url) as response:
-                    with tarfile.open(fileobj=response, mode="r|*") as tar:
-                        # Extract into ~/.triton (the tar contains 'llvm-dist/' folder)
-                        tar.extractall(path=triton_cache)
+                if not os.path.exists(os.path.join(llvm_build_dir, "lib", "libLLVM.so")):
+                    print(f"Downloading LLVM from {dist_url}...", file=sys.stderr)
+                    os.makedirs(triton_cache, exist_ok=True)
+                    with open_url(dist_url) as response:
+                        with tarfile.open(fileobj=response, mode="r|*") as tar:
+                            if hasattr(tarfile, 'data_filter'):
+                                tar.extractall(path=triton_cache, filter="data")
+                            else:
+                                tar.extractall(path=triton_cache)
 
-            abs_sdk = os.path.abspath(sdk_root)
+                    if not os.path.exists(os.path.join(llvm_build_dir, "lib", "libLLVM.so")):
+                        raise RuntimeError(f"libLLVM.so not found after extraction at {llvm_build_dir}/lib")
 
-            cmake_args += [
-                f"-DLLVM_SYSPATH={abs_sdk}",
-                f"-DCMAKE_PREFIX_PATH={abs_sdk}",
-                f"-DLLVM_DIR={abs_sdk}/lib/cmake/llvm",
-                f"-DMLIR_DIR={abs_sdk}/lib/cmake/mlir",
-                f"-DLLD_DIR={abs_sdk}/lib/cmake/lld",
-                f"-DMLIR_TABLEGEN_EXE={abs_sdk}/bin/mlir-tblgen",
-                f"-DLLVM_TABLEGEN_EXE={abs_sdk}/bin/llvm-tblgen",
-                "-DLLVM_BUILD_SHARED_LIBS=ON",
-                "-DTRITON_PULL_LLVM_SHARED_LIBS=OFF" # Kill Triton's internal downloader
-            ]
+                    print(f"LLVM extracted to {llvm_build_dir}", file=sys.stderr)
+                else:
+                    print(f"Using cached LLVM at {llvm_build_dir}", file=sys.stderr)
 
-            cmake_args += [f"-DCMAKE_INSTALL_RPATH={abs_sdk}/lib"]
-
-            os.environ["LLVM_SYSPATH"] = abs_sdk
-            # Update LD_LIBRARY_PATH so the build-time tests/tools can find the .so files
-            os.environ["LD_LIBRARY_PATH"] = os.path.join(abs_sdk, "lib") + \
-                (f":{os.environ.get('LD_LIBRARY_PATH', '')}" if os.environ.get('LD_LIBRARY_PATH') else "")
+                os.environ["LLVM_BUILD_DIR"] = llvm_build_dir
 
         # Note that asan doesn't work with binaries that use the GPU, so this is
         # only useful for tools like triton-opt that don't run code on the GPU.
